@@ -1311,3 +1311,161 @@ class AutoBNAFNormal(AutoContinuous):
 
     def get_base_dist(self):
         return dist.Normal(jnp.zeros(self.latent_dim), 1).to_event(1)
+
+
+class AutoFKF(AutoContinuous):
+    """
+    Fokker-Planck Flow
+    """
+
+    def __init__(
+        self,
+        model,
+        *,
+        K=4,
+        base_dist="diagonal",
+        eta_init=0.01,
+        eta_max=0.1,
+        prefix="auto",
+        init_loc_fn=init_to_uniform,
+        init_scale=0.1,
+    ):
+        if K < 1:
+            raise ValueError("K must satisfy K >= 1 (got K = {})".format(K))
+        if base_dist not in ["diagonal", "cholesky"]:
+            raise ValueError('base_dist must be one of "diagonal" or "cholesky".')
+        if eta_init <= 0.0 or eta_init >= eta_max:
+            raise ValueError(
+                "eta_init must be positive and satisfy eta_init < eta_max."
+            )
+        if eta_max <= 0.0:
+            raise ValueError("eta_max must be positive.")
+        if init_scale <= 0.0:
+            raise ValueError("init_scale must be positive.")
+
+        self.eta_init = eta_init
+        self.eta_max = eta_max
+        self.K = K
+        self.base_dist = base_dist
+        self._init_scale = init_scale
+        super().__init__(model, prefix=prefix, init_loc_fn=init_loc_fn)
+
+    def _setup_prototype(self, *args, **kwargs):
+        super()._setup_prototype(*args, **kwargs)
+
+        for name, site in self.prototype_trace.items():
+            if (
+                site["type"] == "plate"
+                and isinstance(site["args"][1], int)
+                and site["args"][0] > site["args"][1]
+            ):
+                raise NotImplementedError(
+                    "AutoFKF cannot be used in conjuction with data subsampling."
+                )
+
+    def _get_posterior(self):
+        raise NotImplementedError
+
+    def _sample_latent(self, *args, **kwargs):
+        def log_density(x):
+            x_unpack = self._unpack_latent(x)
+            with numpyro.handlers.block():
+                return -self._potential_fn(x_unpack)
+
+        eta0 = numpyro.param(
+            "{}_eta0".format(self.prefix),
+            self.eta_init,
+            constraint=constraints.interval(0, self.eta_max),
+        )
+        eta_coeff = numpyro.param("{}_eta_coeff".format(self.prefix), 0.00)
+
+        gamma = numpyro.param(
+            "{}_gamma".format(self.prefix),
+            self.gamma_init,
+            constraint=constraints.interval(0, 1),
+        )
+        betas = numpyro.param(
+            "{}_beta_increments".format(self.prefix),
+            jnp.ones(self.K),
+            constraint=constraints.positive,
+        )
+        betas = jnp.cumsum(betas)
+        betas = betas / betas[-1]  # K-dimensional with betas[-1] = 1
+
+        mass_matrix = numpyro.param(
+            "{}_mass_matrix".format(self.prefix),
+            jnp.ones(self.latent_dim),
+            constraint=constraints.positive,
+        )
+        inv_mass_matrix = 0.5 / mass_matrix
+
+        init_z_loc = numpyro.param(
+            "{}_z_0_loc".format(self.prefix),
+            self._init_latent,
+        )
+
+        if self.base_dist == "diagonal":
+            init_z_scale = numpyro.param(
+                "{}_z_0_scale".format(self.prefix),
+                jnp.full(self.latent_dim, self._init_scale),
+                constraint=constraints.positive,
+            )
+            base_z_dist = dist.Normal(init_z_loc, init_z_scale).to_event()
+        elif self.base_dist == "cholesky":
+            scale_tril = numpyro.param(
+                "{}_z_0_scale_tril".format(self.prefix),
+                jnp.identity(self.latent_dim) * self._init_scale,
+                constraint=constraints.scaled_unit_lower_cholesky,
+            )
+            base_z_dist = dist.MultivariateNormal(init_z_loc, scale_tril=scale_tril)
+
+        z_0 = numpyro.sample(
+            "{}_z_0".format(self.prefix),
+            base_z_dist,
+            infer={"is_auxiliary": True},
+        )
+        momentum_dist = dist.Normal(0, mass_matrix).to_event()
+        eps = numpyro.sample(
+            "{}_momentum".format(self.prefix),
+            momentum_dist.expand((self.K,)).to_event().mask(False),
+            infer={"is_auxiliary": True},
+        )
+
+        def scan_body(carry, eps_beta):
+            eps, beta = eps_beta
+            eta = eta0 + eta_coeff * beta
+            eta = jnp.clip(eta, a_min=0.0, a_max=self.eta_max)
+            z_prev, v_prev, log_factor = carry
+            z_half = z_prev + v_prev * eta * inv_mass_matrix
+            q_grad = (1.0 - beta) * grad(base_z_dist.log_prob)(z_half)
+            p_grad = beta * grad(log_density)(z_half)
+            v_hat = v_prev + eta * (q_grad + p_grad)
+            z = z_half + v_hat * eta * inv_mass_matrix
+            v = gamma * v_hat + jnp.sqrt(1 - gamma**2) * eps
+            delta_ke = momentum_dist.log_prob(v_prev) - momentum_dist.log_prob(v_hat)
+            log_factor = log_factor + delta_ke
+            return (z, v, log_factor), None
+
+        v_0 = eps[-1]  # note the return value of scan doesn't depend on eps[-1]
+        (z, _, log_factor), _ = jax.lax.scan(scan_body, (z_0, v_0, 0.0), (eps, betas))
+
+        numpyro.factor("{}_factor".format(self.prefix), log_factor)
+
+        return z
+
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        def _single_sample(_rng_key):
+            latent_sample = handlers.substitute(
+                handlers.seed(self._sample_latent, _rng_key), params
+            )(sample_shape=())
+            return self._unpack_and_constrain(latent_sample, params)
+
+        if sample_shape:
+            rng_key = random.split(rng_key, int(np.prod(sample_shape)))
+            samples = lax.map(_single_sample, rng_key)
+            return tree_map(
+                lambda x: jnp.reshape(x, sample_shape + jnp.shape(x)[1:]),
+                samples,
+            )
+        else:
+            return _single_sample(rng_key)
