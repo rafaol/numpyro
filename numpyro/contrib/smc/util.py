@@ -1,3 +1,6 @@
+# Copyright Contributors to the Pyro project.
+# SPDX-License-Identifier: Apache-2.0
+
 from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 
@@ -61,7 +64,7 @@ def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False):
         The covariance matrix of the variables.
     """
     if m.ndim > 2:
-        raise ValueError('m has more than 2 dimensions')
+        raise ValueError("m has more than 2 dimensions")
     if m.ndim < 2:
         m = m.reshape((1, -1))
     if not rowvar and m.shape[0] != 1:
@@ -72,7 +75,7 @@ def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False):
         mt = m.T
         return fact * m @ mt.squeeze()
     else:
-        fact = 1.0 / (1 - (weights ** 2).sum())
+        fact = 1.0 / (1 - (weights**2).sum())
         m -= (m * weights).mean(axis=1, keepdims=True)
         return fact * (weights * m) @ m.T
 
@@ -85,7 +88,7 @@ def unconstrain_single_sample(sample: dict, model_trace: dict):
     unconstrained_sample = {}
     for k, v in sample.items():
         site = model_trace[k]
-        transform = biject_to(site['fn'].support)
+        transform = biject_to(site["fn"].support)
         unconstrained_sample[k] = transform.inv(sample[k])
     return ravel_pytree(unconstrained_sample)[0]
 
@@ -98,7 +101,7 @@ def compute_single_jacobian(sample: dict, model_trace: dict):
     jacs = []
     for k, v in sample.items():
         site = model_trace[k]
-        transform = biject_to(site['fn'].support)
+        transform = biject_to(site["fn"].support)
         unconstrained_sample = transform.inv(sample[k])
         jac = transform.log_abs_det_jacobian(unconstrained_sample, sample[k])
         jacs += [jac.sum()]
@@ -108,16 +111,23 @@ def compute_single_jacobian(sample: dict, model_trace: dict):
 def compute_jacobians(samples: dict, model_trace: dict, batch_n_dims=1, chunk_size=1):
     def single_jac(x):
         return compute_single_jacobian(x, model_trace)
+
     return soft_vmap(single_jac, samples, batch_n_dims, chunk_size)
 
 
-def compute_acceptance_probs(old_samples: dict, new_samples: dict, model_trace: dict, model: DataModel,
-                             proposal_dist: Distribution):
+def compute_acceptance_probs(
+    old_samples: dict,
+    new_samples: dict,
+    model_trace: dict,
+    model: DataModel,
+    proposal_dist: Distribution,
+):
     n_samples = len(old_samples[next(iter(old_samples.keys()))])
 
     def compute_single_log_ratio(sample):
-        log_prop = proposal_dist.log_prob(unconstrain_single_sample(sample, model_trace)) \
-            - compute_single_jacobian(sample, model_trace)
+        log_prop = proposal_dist.log_prob(
+            unconstrain_single_sample(sample, model_trace)
+        ) - compute_single_jacobian(sample, model_trace)
         log_joint, _ = log_density(model, tuple(), model.data, sample)
         assert log_prop.shape == log_joint.shape
         return log_joint - log_prop

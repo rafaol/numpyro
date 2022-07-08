@@ -1,15 +1,26 @@
+# Copyright Contributors to the Pyro project.
+# SPDX-License-Identifier: Apache-2.0
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
 from numpyro.infer.util import log_likelihood
+
 from .move import BasicMoveKernel
 from .util import DataModel
 
 
 class StaticSMCSampler:
-    def __init__(self, model: DataModel, initial_samples: dict, move: BasicMoveKernel = None, n_move: int = 1,
-                 ess_threshold: float = 0.5, parallel: bool = False):
+    def __init__(
+        self,
+        model: DataModel,
+        initial_samples: dict,
+        move: BasicMoveKernel = None,
+        n_move: int = 1,
+        ess_threshold: float = 0.5,
+        parallel: bool = False,
+    ):
         """
         A sequential Monte Carlo sampler for static models (i.e., models with parameters which do not change over time).
 
@@ -57,9 +68,11 @@ class StaticSMCSampler:
         :return: a scalar representing the effective sample size
         :raises AssertionError: case there is a NaN value among the normalised weights the method computes internally.
         """
-        p_weights = jnp.exp(self._log_weights - logsumexp(self._log_weights))   # compute normalised weights
+        p_weights = jnp.exp(
+            self._log_weights - logsumexp(self._log_weights)
+        )  # compute normalised weights
         assert not jnp.isnan(p_weights).any()
-        return 1.0 / (p_weights ** 2).sum()
+        return 1.0 / (p_weights**2).sum()
 
     def compute_weights(self, *args, **kwargs) -> jnp.ndarray:
         """
@@ -68,9 +81,15 @@ class StaticSMCSampler:
         :param args: model arguments
         :param kwargs: model keyword arguments
         """
-        log_like = log_likelihood(self._model, self._particles, *args, parallel=self.parallel, **kwargs)
-        log_w = jnp.stack([log_like[k].sum(axis=tuple(jnp.arange(1, log_like[k].ndim))) for k in log_like.keys()]
-                          ).sum(axis=0)
+        log_like = log_likelihood(
+            self._model, self._particles, *args, parallel=self.parallel, **kwargs
+        )
+        log_w = jnp.stack(
+            [
+                log_like[k].sum(axis=tuple(jnp.arange(1, log_like[k].ndim)))
+                for k in log_like.keys()
+            ]
+        ).sum(axis=0)
         assert not jnp.isnan(log_w).any()
         return log_w
 
@@ -81,7 +100,9 @@ class StaticSMCSampler:
         """
         Performs multinomial resampling of SMC particles according to their weights.
         """
-        sample_idx = jax.random.categorical(rng_key, logits=self._log_weights, shape=(self._log_weights.shape[0],))
+        sample_idx = jax.random.categorical(
+            rng_key, logits=self._log_weights, shape=(self._log_weights.shape[0],)
+        )
         self._particles = {k: v[sample_idx] for k, v in self._particles.items()}
         self._clear_weights()
 

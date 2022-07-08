@@ -1,28 +1,36 @@
+# Copyright Contributors to the Pyro project.
+# SPDX-License-Identifier: Apache-2.0
+
+from tqdm import trange
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
-import numpyro
-import numpyro.distributions as nd
-from numpyro.infer.util import Predictive
-from tqdm import trange
 
+import numpyro
 from numpyro.contrib import smc
 from numpyro.contrib.smc.util import cov
+import numpyro.distributions as nd
+from numpyro.infer.util import Predictive
 
 
 class SimpleModel(smc.DataModel):
     def __init__(self, n_dim=3):
-        super(SimpleModel, self).__init__(arg_names=['y'])
+        super(SimpleModel, self).__init__(arg_names=["y"])
         self.n_dim = n_dim
 
     def __call__(self, y, n_data: int = 1):
-        mean = numpyro.sample("mean", nd.MultivariateNormal(jnp.zeros(self.n_dim), jnp.eye(self.n_dim)))
+        mean = numpyro.sample(
+            "mean", nd.MultivariateNormal(jnp.zeros(self.n_dim), jnp.eye(self.n_dim))
+        )
         variance = numpyro.sample("variance", nd.InverseGamma(100, 1))
 
         if y is not None:
             n_data = y.shape[0]
         with numpyro.plate("individual", n_data):
-            individual_mean = numpyro.sample("individual_mean", nd.MultivariateNormal(mean, jnp.eye(self.n_dim)))
+            individual_mean = numpyro.sample(
+                "individual_mean", nd.MultivariateNormal(mean, jnp.eye(self.n_dim))
+            )
 
         numpyro.sample("y", nd.Normal(individual_mean, scale=variance**0.5), obs=y)
 
@@ -34,14 +42,18 @@ if __name__ == "__main__":
     prior = Predictive(model, num_samples=n_particles)
     rng_key = jax.random.PRNGKey(0)
     prior_samples = prior(rng_key, y=jnp.zeros((1, model.n_dim)))
-    param_samples = {k: v for k, v in prior_samples.items() if k != 'y'}
+    param_samples = {k: v for k, v in prior_samples.items() if k != "y"}
 
     smc_sampler = smc.StaticSMCSampler(model, param_samples, n_move=1)
 
     rng_key, rng_key_gen = jax.random.split(rng_key)
-    sampled_idx = jax.random.randint(rng_key_gen, minval=jnp.zeros(()), maxval=n_particles, shape=())
+    sampled_idx = jax.random.randint(
+        rng_key_gen, minval=jnp.zeros(()), maxval=n_particles, shape=()
+    )
     true_params = {k: v[sampled_idx] for k, v in param_samples.items()}
-    obs_gen = Predictive(model, posterior_samples=true_params, batch_ndims=0, return_sites=['y'])
+    obs_gen = Predictive(
+        model, posterior_samples=true_params, batch_ndims=0, return_sites=["y"]
+    )
 
     n_obs = 100
 
