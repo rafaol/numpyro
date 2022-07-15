@@ -8,6 +8,7 @@ from numpyro.distributions import Distribution
 from numpyro.distributions.transforms import biject_to
 from numpyro.infer.util import log_density
 from numpyro.util import soft_vmap
+from numpyro.contrib import funsor
 
 
 class DataModel:
@@ -84,27 +85,52 @@ def compute_moments(unconstrained_samples):
     return unconstrained_samples.mean(axis=0), cov(unconstrained_samples)
 
 
-def unconstrain_single_sample(sample: dict, model_trace: dict):
+def unconstrain_single_sample(sample: dict, model_trace: dict, return_unpack=False):
     unconstrained_sample = {}
     for k, v in sample.items():
         site = model_trace[k]
-        transform = biject_to(site["fn"].support)
-        unconstrained_sample[k] = transform.inv(sample[k])
+        if site['type'] == 'sample':
+            support = site['fn'].support
+            if not support.is_discrete:
+                transform = biject_to(site["fn"].support)
+                unconstrained_sample[k] = transform.inv(sample[k])
+    if return_unpack:
+        return ravel_pytree(unconstrained_sample)
     return ravel_pytree(unconstrained_sample)[0]
 
 
-def unconstrain_samples(samples, model_trace: dict):
-    return soft_vmap(lambda x: unconstrain_single_sample(x, model_trace), samples)
+def unconstrain_samples(samples, model_trace: dict, return_unpack=False):
+    unconstrained = soft_vmap(lambda x: unconstrain_single_sample(x, model_trace), samples)
+    if return_unpack:
+        _, unpack_tf = unconstrain_single_sample({k: v[0] for k, v in samples.items()}, model_trace, return_unpack=True)
+        return unconstrained, unpack_tf
+    return unconstrained
+
+
+def constrain_samples(samples: dict, model_trace: dict):
+    constrained_samples = {}
+    for k, v in samples.items():
+        site = model_trace[k]
+        if site['type'] == 'sample':
+            support = site['fn'].support
+            if not support.is_discrete:
+                constrained_samples[k] = biject_to(support)(samples[k])
+            else:
+                constrained_samples[k] = samples[k]
+    return constrained_samples
 
 
 def compute_single_jacobian(sample: dict, model_trace: dict):
     jacs = []
     for k, v in sample.items():
         site = model_trace[k]
-        transform = biject_to(site["fn"].support)
-        unconstrained_sample = transform.inv(sample[k])
-        jac = transform.log_abs_det_jacobian(unconstrained_sample, sample[k])
-        jacs += [jac.sum()]
+        if site['type'] == 'sample':
+            support = site['fn'].support
+            if not support.is_discrete:
+                transform = biject_to(site["fn"].support)
+                unconstrained_sample = transform.inv(sample[k])
+                jac = transform.log_abs_det_jacobian(unconstrained_sample, sample[k])
+                jacs += [jac.sum()]
     return jnp.stack(jacs).sum(axis=0)
 
 
@@ -124,16 +150,59 @@ def compute_acceptance_probs(
 ):
     n_samples = len(old_samples[next(iter(old_samples.keys()))])
 
+    use_enum = False
+    for site in model_trace.values():
+        if site['type'] == 'sample':
+            if site['fn'].has_enumerate_support:
+                use_enum = True
+                break
+
+    model_data = model.data
+    if use_enum:
+        # model = funsor.enum(funsor.config_enumerate(model))
+        log_density_fn = funsor.log_density
+    else:
+        log_density_fn = log_density
+
     def compute_single_log_ratio(sample):
         log_prop = proposal_dist.log_prob(
             unconstrain_single_sample(sample, model_trace)
         ) - compute_single_jacobian(sample, model_trace)
-        log_joint, _ = log_density(model, tuple(), model.data, sample)
+        log_joint, _ = log_density_fn(model, tuple(), model_data, sample)
         assert log_prop.shape == log_joint.shape
         return log_joint - log_prop
 
-    log_ratios_new = soft_vmap(compute_single_log_ratio, new_samples, 1, n_samples)
-    log_ratios_old = soft_vmap(compute_single_log_ratio, old_samples, 1, n_samples)
+    log_ratios_new = soft_vmap(compute_single_log_ratio, new_samples)
+    log_ratios_old = soft_vmap(compute_single_log_ratio, old_samples)
 
     log_accept_prob = jnp.clip(log_ratios_new - log_ratios_old, a_max=0)
     return log_accept_prob
+
+
+def get_discrete_samples(samples: dict, model_trace: dict):
+    discrete = {}
+    for name, values in samples.items():
+        site = model_trace[name]
+        if site['type'] == 'sample':
+            if site['fn'].support.is_discrete:
+                discrete[name] = values
+    return discrete
+
+
+def get_continuous_samples(samples: dict, model_trace: dict):
+    continuous = {}
+    for name, values in samples.items():
+        site = model_trace[name]
+        if site['type'] == 'sample':
+            if not site['fn'].support.is_discrete:
+                continuous[name] = values
+    return continuous
+
+
+def pack_samples(samples: dict):
+    _, unpack_tf = ravel_pytree({k: v[0] for k, v in samples.items()})
+    return soft_vmap(lambda x: ravel_pytree(x)[0], samples), unpack_tf
+
+
+def unpack_samples(samples: jnp.ndarray, unpack_tf):
+    return soft_vmap(unpack_tf, samples)
