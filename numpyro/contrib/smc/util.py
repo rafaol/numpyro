@@ -3,6 +3,7 @@
 
 from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp
 
 from numpyro.distributions import Distribution
 from numpyro.distributions.transforms import biject_to
@@ -41,7 +42,7 @@ class DataModel:
         raise NotImplementedError()
 
 
-def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False):
+def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False) -> jnp.ndarray:
     """Estimate a covariance matrix given data.
 
     Covariance indicates the level to which two variables vary together.
@@ -81,8 +82,11 @@ def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False):
         return fact * (weights * m) @ m.T
 
 
-def compute_moments(unconstrained_samples):
-    return unconstrained_samples.mean(axis=0), cov(unconstrained_samples)
+def compute_moments(unconstrained_samples: jnp.ndarray, log_weights: jnp.ndarray) -> (jnp.ndarray, jnp.ndarray):
+    probs = jnp.exp(log_weights - logsumexp(log_weights))
+    mean = jnp.tensordot(probs, unconstrained_samples, axes=1)
+    cov_matrix = cov(unconstrained_samples, weights=probs)
+    return mean, cov_matrix
 
 
 def unconstrain_single_sample(sample: dict, model_trace: dict, return_unpack=False):
