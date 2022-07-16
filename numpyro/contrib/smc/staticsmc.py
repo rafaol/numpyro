@@ -34,8 +34,6 @@ class StaticSMCSampler:
         self._model = model
         self._particles = initial_samples
         self.ess_threshold = ess_threshold
-        if move is None:
-            move = BasicMoveKernel()
         self.move = move
         self.n_move = n_move
         self.parallel = parallel
@@ -118,7 +116,10 @@ class StaticSMCSampler:
         self._model.update_data(**kwargs)
         ess = self.effective_sample_size()
         if ess < self.ess_threshold * self.num_particles:
-            self.resample(rng_key_s)
+            if self.move is None:
+                self.move = BasicMoveKernel(self._model)
+
             rng_keys = jax.random.split(rng_key_m, self.n_move)
             for i in range(self.n_move):
-                self._particles = self.move(rng_keys[i], self._model, self._particles)
+                self._particles = self.move(rng_keys[i], self._model, self._particles, self._log_weights)
+                self._clear_weights()
