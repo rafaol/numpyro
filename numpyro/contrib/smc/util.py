@@ -210,3 +210,11 @@ def pack_samples(samples: dict):
 
 def unpack_samples(samples: jnp.ndarray, unpack_tf):
     return soft_vmap(unpack_tf, samples)
+
+
+def filter_samples(samples: dict, model_trace: dict):
+    filtered_samples = dict()
+    for name, value in samples.items():
+        if model_trace[name]['type'] == 'sample':
+            filtered_samples[name] = value
+    return filtered_samples
