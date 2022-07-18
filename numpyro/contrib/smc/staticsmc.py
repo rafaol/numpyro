@@ -4,17 +4,17 @@
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
+from typing import Callable
 
 from numpyro.infer.util import log_likelihood
 
 from .move import BasicMoveKernel
-from .util import DataModel
 
 
 class StaticSMCSampler:
     def __init__(
         self,
-        model: DataModel,
+        model: Callable,
         initial_samples: dict,
         move: BasicMoveKernel = None,
         n_move: int = 1,
@@ -39,6 +39,7 @@ class StaticSMCSampler:
         self.parallel = parallel
         self._log_weights = None
         self._clear_weights()
+        self._data = {'args': [], 'kwargs': []}
 
     @property
     def num_particles(self) -> int:
@@ -81,13 +82,13 @@ class StaticSMCSampler:
         """
         log_like = log_likelihood(
             self._model, self._particles, *args, parallel=self.parallel, **kwargs
-        )
+            )
         log_w = jnp.stack(
             [
                 log_like[k].sum(axis=tuple(jnp.arange(1, log_like[k].ndim)))
                 for k in log_like.keys()
-            ]
-        ).sum(axis=0)
+                ]
+            ).sum(axis=0)
         assert not jnp.isnan(log_w).any()
         return log_w
 
@@ -113,13 +114,16 @@ class StaticSMCSampler:
         """
         rng_key_w, rng_key_s, rng_key_m = jax.random.split(rng_key, 3)
         self._log_weights += self.compute_weights(*args, **kwargs)
-        self._model.update_data(**kwargs)
+        self._data['args'] += [args]
+        self._data['kwargs'] += [kwargs]
         ess = self.effective_sample_size()
         if ess < self.ess_threshold * self.num_particles:
             if self.move is None:
-                self.move = BasicMoveKernel(self._model)
+                self.move = BasicMoveKernel(self._model, *args, **kwargs)
 
             rng_keys = jax.random.split(rng_key_m, self.n_move)
             for i in range(self.n_move):
-                self._particles = self.move(rng_keys[i], self._model, self._particles, self._log_weights)
-                self._clear_weights()
+                self._particles = self.move(rng_keys[i], self._model, self._data['args'], self._data['kwargs'],
+                                            self._particles, self._log_weights)
+                if i == 0:
+                    self._clear_weights()
