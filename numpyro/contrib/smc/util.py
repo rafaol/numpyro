@@ -42,7 +42,7 @@ class DataModel:
         raise NotImplementedError()
 
 
-def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False) -> jnp.ndarray:
+def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False, unbiased: bool = False) -> jnp.ndarray:
     """Estimate a covariance matrix given data.
 
     Covariance indicates the level to which two variables vary together.
@@ -72,12 +72,19 @@ def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False) -> jn
     if not rowvar and m.shape[0] != 1:
         m = m.T
     if weights is None:
-        fact = 1.0 / (m.shape[1] - 1)
+        if unbiased:
+            fact = 1.0 / (m.shape[1] - 1)
+        else:
+            fact = 1. / m.shape[1]
+
         m -= m.mean(axis=1, keepdims=True)
         mt = m.T
         return fact * m @ mt.squeeze()
     else:
-        fact = 1.0 / (1 - (weights**2).sum())
+        if unbiased:
+            fact = 1.0 / (1 - (weights**2).sum())
+        else:
+            fact = 1.
         m -= (m * weights).mean(axis=1, keepdims=True)
         return fact * (weights * m) @ m.T
 
