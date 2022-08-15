@@ -85,7 +85,7 @@ def cov(m: jnp.ndarray, weights: jnp.ndarray = None, rowvar: bool = False, unbia
             fact = 1.0 / (1 - (weights**2).sum())
         else:
             fact = 1.
-        m -= (m * weights).mean(axis=1, keepdims=True)
+        m -= (m * weights).sum(axis=1, keepdims=True)
         return fact * (weights * m) @ m.T
 
 
