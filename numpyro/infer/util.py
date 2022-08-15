@@ -625,7 +625,7 @@ def initialize_model(
     if has_enumerate_support:
         from numpyro.contrib.funsor import config_enumerate, enum
 
-        if not isinstance(model, enum):
+        if not isinstance(model.fn, enum):
             max_plate_nesting = _guess_max_plate_nesting(model_trace)
             _validate_model(model_trace, plate_warning="error")
             model = enum(config_enumerate(model), -max_plate_nesting - 1)
