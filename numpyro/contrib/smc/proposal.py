@@ -40,11 +40,11 @@ class BasicContinuousProposal(Proposal):
         """
         mean, covariance = compute_moments(unconstrained_samples, log_weights)
         eigvals, eigvecs = jnp.linalg.eigh(covariance)
-        positive_mask = (eigvals > 0)
+        positive_mask = (eigvals > jnp.finfo(covariance.dtype).eps)
         if not positive_mask.any():
             raise AssertionError("No positive eigenvalues found for proposal covariance matrix")
-        cov_factor = eigvecs[..., positive_mask]
-        cov_diag = jnp.ones_like(eigvals) * self.cov_nugget + jnp.clip(eigvals, a_min=0)
+        cov_factor = eigvecs[..., positive_mask] @ jnp.diag(eigvals[positive_mask]) ** 0.5
+        cov_diag = jnp.ones_like(eigvals) * self.cov_nugget
 
         return LowRankMultivariateNormal(mean, cov_factor=cov_factor, cov_diag=cov_diag)
 
