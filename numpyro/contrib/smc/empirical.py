@@ -5,6 +5,9 @@ from numpyro.distributions import Distribution, Categorical, constraints
 
 
 class Empirical(Distribution):
+    """
+    A port from Pyro's empirical distribution implementation to NumPyro.
+    """
     arg_constraints = {}
     support = constraints.real
     has_enumerate_support = True
